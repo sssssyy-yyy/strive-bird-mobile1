@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
-import { GoogleGenAI, Type } from "@google/genai";
 
 // --- Configuration ---
 const GRAVITY = 0.5;
@@ -43,53 +42,70 @@ const App = () => {
     if (saved) setHighScore(parseInt(saved, 10));
   }, []);
 
-  // --- AI Generation Logic (Google GenAI SDK) ---
+  // --- AI Generation Logic (DeepSeek API) ---
   const generateMotivation = async (finalScore: number) => {
     setIsAiLoading(true);
     setAiMessage("");
     
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      // DeepSeek API Configuration
+      // 申请地址: https://platform.deepseek.com/
+      const API_URL = "https://api.deepseek.com/chat/completions";
+      const API_KEY = process.env.API_KEY; 
+
+      if (!API_KEY) {
+        setAiMessage("请配置 API Key 以启用 AI 吐槽功能");
+        setIsAiLoading(false);
+        return;
+      }
+
       const systemPrompt = `你是一个人生导师。
 请根据玩家在"奋斗小鸟"（类似Flappy Bird）游戏中的得分，生成一句简短的中文评价（30字以内）。
 规则：
 1. 分数 < 3：毒舌、幽默、调侃。
 2. 分数 3-10：鼓励但带点严厉。
-3. 分数 > 10：高度赞赏。`;
+3. 分数 > 10：高度赞赏。
+请务必返回纯 JSON 格式，字段名为 "quote"。例如: { "quote": "你的评价..." }`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `玩家得分是 ${finalScore}。请生成评价。`,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              quote: {
-                type: Type.STRING,
-              },
-            },
-            required: ["quote"],
-          },
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${API_KEY}`
         },
+        body: JSON.stringify({
+          model: "deepseek-chat", // DeepSeek 模型
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: `玩家本局得分是 ${finalScore}。` }
+          ],
+          response_format: { type: "json_object" }, // 强制 JSON 模式
+          temperature: 1.3
+        })
       });
 
-      const text = response.text;
-      if (text) {
-        const json = JSON.parse(text);
-        if (json.quote) {
-          setAiMessage(json.quote);
-        } else {
-           setAiMessage("奋斗不息，飞翔不止！");
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      
+      if (content) {
+        try {
+          const json = JSON.parse(content);
+          setAiMessage(json.quote || content);
+        } catch (e) {
+          // Fallback if JSON parse fails
+          setAiMessage(content.replace(/["{}]/g, ""));
         }
       } else {
-        setAiMessage("Gemini 似乎也在思考人生...");
+        setAiMessage("AI 正在思考人生...");
       }
 
     } catch (error) {
       console.error("AI Error:", error);
-      setAiMessage("网络有点累，但你的奋斗不能停！(请检查 API Key)");
+      setAiMessage("网络连接失败，但奋斗还在继续！");
     } finally {
       setIsAiLoading(false);
     }
@@ -311,7 +327,7 @@ const App = () => {
     } else if (gameState === 'START') {
       startGame();
     }
-  }, [gameState, isAiLoading]);
+  }, [gameState]);
 
   // Handle Loop
   useEffect(() => {
@@ -426,7 +442,7 @@ const App = () => {
               {isAiLoading ? (
                 <div className="flex items-center gap-2 text-gray-400">
                   <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin"></div>
-                  <span>Gemini 正在犀利点评...</span>
+                  <span>AI 正在犀利点评...</span>
                 </div>
               ) : (
                 <p className="text-lg italic font-medium text-emerald-300 px-4">
