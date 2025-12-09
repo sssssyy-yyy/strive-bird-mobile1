@@ -1,0 +1,5 @@
+{
+  "name": "Strive Bird (奋斗小鸟)",
+  "description": "A Flappy-style game where you strive to fly further. Features AI-generated motivational quotes when you crash.",
+  "requestFramePermissions": []
+}
