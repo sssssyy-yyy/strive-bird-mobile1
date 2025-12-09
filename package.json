@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@google/genai": "^1.32.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
   },

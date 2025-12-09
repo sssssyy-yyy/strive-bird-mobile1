@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
-import { GoogleGenAI, Type } from "@google/genai";
 
 // --- Configuration ---
 const GRAVITY = 0.5;
@@ -11,9 +10,6 @@ const PIPE_GAP = 160;
 const BIRD_SIZE = 30; // Visual size
 const BIRD_HITBOX = 24; // Physical size
 const PIPE_WIDTH = 60;
-
-// Initialize AI
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // --- Types ---
 type GameState = 'START' | 'PLAYING' | 'GAMEOVER';
@@ -46,54 +42,68 @@ const App = () => {
     if (saved) setHighScore(parseInt(saved, 10));
   }, []);
 
-  // --- AI Generation Logic ---
+  // --- AI Generation Logic (DeepSeek API) ---
   const generateMotivation = async (finalScore: number) => {
     setIsAiLoading(true);
     setAiMessage("");
     
     try {
-      const prompt = `玩家在"奋斗小鸟"（类似Flappy Bird）游戏中输了，得分是 ${finalScore}。
-      请生成一句简短的中文评价（30字以内）。
-      如果分数低（<3），要毒舌、幽默、调侃；
-      如果分数中等（3-10），要鼓励但带点严厉；
-      如果分数高（>10），给予高度赞赏。
-      直接以第一人称（人生导师）的口吻说，不要加引号。`;
+      const systemPrompt = `你是一个人生导师。
+请根据玩家在"奋斗小鸟"（类似Flappy Bird）游戏中的得分，生成一句简短的中文评价（30字以内）。
+输出必须是纯净的JSON格式，包含一个字段 "quote"。
+规则：
+1. 分数 < 3：毒舌、幽默、调侃。
+2. 分数 3-10：鼓励但带点严厉。
+3. 分数 > 10：高度赞赏。`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              quote: {
-                type: Type.STRING,
-                description: "The motivational or humorous quote for the player."
-              }
-            }
-          }
-        }
+      const userMessage = `玩家得分是 ${finalScore}。请生成评价。`;
+
+      // 使用 DeepSeek API (OpenAI 兼容接口)
+      const response = await fetch("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMessage }
+          ],
+          response_format: { type: "json_object" },
+          temperature: 1.3, // 稍微调高温度，增加创造性和幽默感
+          max_tokens: 100
+        })
       });
-      
-      const json = JSON.parse(response.text);
-      if (json.quote) {
-        setAiMessage(json.quote);
-      } else {
-         setAiMessage("跌倒了就爬起来，没什么大不了的！");
+
+      if (!response.ok) {
+        throw new Error(`DeepSeek API error: ${response.status}`);
       }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      
+      if (content) {
+        const json = JSON.parse(content);
+        if (json.quote) {
+          setAiMessage(json.quote);
+        } else {
+           setAiMessage("奋斗不息，飞翔不止！");
+        }
+      } else {
+        setAiMessage("DeepSeek 似乎也在思考人生...");
+      }
+
     } catch (error) {
       console.error("AI Error:", error);
-      setAiMessage("网络有点累，但你的奋斗不能停！再来！");
+      setAiMessage("网络有点累，但你的奋斗不能停！(请检查 API Key)");
     } finally {
       setIsAiLoading(false);
     }
   };
 
   // --- Game Loop ---
-  // Define gameOver outside to be used in update, but it needs to be stable or ref-based
-  // To avoid closure hell, we'll implement logic inside update or use a ref for the trigger
-  
   const update = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -329,14 +339,14 @@ const App = () => {
 
   return (
     <div className="flex justify-center items-center h-screen bg-neutral-800" onMouseDown={() => jump()} onTouchStart={() => jump()}>
-      <div className="relative shadow-2xl overflow-hidden rounded-lg">
-        <canvas ref={canvasRef} className="block bg-sky-300 cursor-pointer" />
+      <div className="relative shadow-2xl overflow-hidden rounded-lg w-full h-full max-w-[480px]">
+        <canvas ref={canvasRef} className="block bg-sky-300 cursor-pointer w-full h-full" />
 
         {/* Start Screen */}
         {gameState === 'START' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 text-white pointer-events-none">
             <h1 className="text-4xl font-bold mb-4 drop-shadow-md animate-float">奋斗小鸟</h1>
-            <p className="text-lg bg-white/20 px-4 py-2 rounded-full backdrop-blur-sm">按空格或点击屏幕起飞</p>
+            <p className="text-lg bg-white/20 px-4 py-2 rounded-full backdrop-blur-sm">点击屏幕起飞</p>
           </div>
         )}
 
@@ -366,11 +376,11 @@ const App = () => {
             </div>
 
             {/* AI Message Area */}
-            <div className="mb-8 min-h-[80px] flex items-center justify-center">
+            <div className="mb-8 min-h-[80px] flex items-center justify-center w-full">
               {isAiLoading ? (
                 <div className="flex items-center gap-2 text-gray-400">
                   <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin"></div>
-                  <span>AI 正在思考鼓励的话...</span>
+                  <span>DeepSeek 正在犀利点评...</span>
                 </div>
               ) : (
                 <p className="text-lg italic font-medium text-emerald-300 px-4">
