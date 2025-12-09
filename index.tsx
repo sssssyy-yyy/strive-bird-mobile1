@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
+import { GoogleGenAI, Type } from "@google/genai";
 
 // --- Configuration ---
 const GRAVITY = 0.5;
@@ -12,7 +13,7 @@ const BIRD_HITBOX = 24; // Physical size
 const PIPE_WIDTH = 60;
 
 // --- Types ---
-type GameState = 'START' | 'PLAYING' | 'GAMEOVER';
+type GameState = 'START' | 'PLAYING' | 'GAMEOVER' | 'PAUSED';
 
 interface Pipe {
   x: number;
@@ -42,57 +43,48 @@ const App = () => {
     if (saved) setHighScore(parseInt(saved, 10));
   }, []);
 
-  // --- AI Generation Logic (DeepSeek API) ---
+  // --- AI Generation Logic (Google GenAI SDK) ---
   const generateMotivation = async (finalScore: number) => {
     setIsAiLoading(true);
     setAiMessage("");
     
     try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const systemPrompt = `你是一个人生导师。
 请根据玩家在"奋斗小鸟"（类似Flappy Bird）游戏中的得分，生成一句简短的中文评价（30字以内）。
-输出必须是纯净的JSON格式，包含一个字段 "quote"。
 规则：
 1. 分数 < 3：毒舌、幽默、调侃。
 2. 分数 3-10：鼓励但带点严厉。
 3. 分数 > 10：高度赞赏。`;
 
-      const userMessage = `玩家得分是 ${finalScore}。请生成评价。`;
-
-      // 使用 DeepSeek API (OpenAI 兼容接口)
-      const response = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.API_KEY}`
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `玩家得分是 ${finalScore}。请生成评价。`,
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              quote: {
+                type: Type.STRING,
+              },
+            },
+            required: ["quote"],
+          },
         },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMessage }
-          ],
-          response_format: { type: "json_object" },
-          temperature: 1.3, // 稍微调高温度，增加创造性和幽默感
-          max_tokens: 100
-        })
       });
 
-      if (!response.ok) {
-        throw new Error(`DeepSeek API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-      
-      if (content) {
-        const json = JSON.parse(content);
+      const text = response.text;
+      if (text) {
+        const json = JSON.parse(text);
         if (json.quote) {
           setAiMessage(json.quote);
         } else {
            setAiMessage("奋斗不息，飞翔不止！");
         }
       } else {
-        setAiMessage("DeepSeek 似乎也在思考人生...");
+        setAiMessage("Gemini 似乎也在思考人生...");
       }
 
     } catch (error) {
@@ -127,7 +119,7 @@ const App = () => {
       generateMotivation(finalScore);
     };
 
-    // 1. Physics & Logic
+    // 1. Physics & Logic (Only update if PLAYING)
     if (gameState === 'PLAYING') {
       birdVelocity.current += GRAVITY;
       birdY.current += birdVelocity.current;
@@ -195,7 +187,7 @@ const App = () => {
       }
     }
 
-    // 2. Render
+    // 2. Render (Always render, even if PAUSED)
     // Background
     ctx.fillStyle = '#70c5ce'; // Sky blue
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -293,17 +285,31 @@ const App = () => {
     setGameState('PLAYING');
   };
 
-  const jump = useCallback((e?: React.MouseEvent | KeyboardEvent | TouchEvent) => {
+  const quitGame = () => {
+    resetGame();
+  };
+
+  const togglePause = (e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation(); // Prevent jump
+    if (gameState === 'PLAYING') {
+      setGameState('PAUSED');
+    } else if (gameState === 'PAUSED') {
+      setGameState('PLAYING');
+    }
+  };
+
+  const jump = useCallback((e?: React.MouseEvent | React.TouchEvent | KeyboardEvent) => {
     if (e && e.type === 'keydown' && (e as KeyboardEvent).code !== 'Space') return;
-    if (e) e.preventDefault(); // Stop scrolling
+    
+    // Important: Do not prevent default if it's a click on a button, but buttons handle propagation.
+    // However, if we click the canvas container, we want to prevent scrolling.
+    // Buttons inside have e.stopPropagation, so this function won't be called for them.
+    if (e && e.cancelable && e.target === e.currentTarget) e.preventDefault(); 
 
     if (gameState === 'PLAYING') {
       birdVelocity.current = JUMP_STRENGTH;
     } else if (gameState === 'START') {
       startGame();
-    } else if (gameState === 'GAMEOVER' && !isAiLoading) {
-       // Optional: Allow tap to restart on gameover
-       // But button is clearer
     }
   }, [gameState, isAiLoading]);
 
@@ -317,11 +323,15 @@ const App = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') jump(e);
+      if (e.code === 'Escape') {
+          if (gameState === 'PLAYING') setGameState('PAUSED');
+          else if (gameState === 'PAUSED') setGameState('PLAYING');
+      }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [jump]);
+  }, [jump, gameState]);
 
   // Resize Handler
   useEffect(() => {
@@ -338,7 +348,7 @@ const App = () => {
   }, []);
 
   return (
-    <div className="flex justify-center items-center h-screen bg-neutral-800" onMouseDown={() => jump()} onTouchStart={() => jump()}>
+    <div className="flex justify-center items-center h-screen bg-neutral-800" onMouseDown={jump} onTouchStart={jump}>
       <div className="relative shadow-2xl overflow-hidden rounded-lg w-full h-full max-w-[480px]">
         <canvas ref={canvasRef} className="block bg-sky-300 cursor-pointer w-full h-full" />
 
@@ -350,13 +360,49 @@ const App = () => {
           </div>
         )}
 
-        {/* HUD */}
-        {gameState === 'PLAYING' && (
-          <div className="absolute top-10 w-full text-center pointer-events-none">
-            <span className="text-6xl font-black text-white drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)] stroke-black">
-              {score}
-            </span>
-          </div>
+        {/* HUD (Score & Pause) */}
+        {(gameState === 'PLAYING' || gameState === 'PAUSED') && (
+          <>
+            <div className="absolute top-10 w-full text-center pointer-events-none z-10">
+              <span className="text-6xl font-black text-white drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)] stroke-black">
+                {score}
+              </span>
+            </div>
+            
+            {/* Pause Button */}
+            <button 
+              onClick={togglePause}
+              className="absolute top-6 right-6 w-10 h-10 bg-black/20 hover:bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center text-white z-20 pointer-events-auto transition active:scale-95"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                 {gameState === 'PAUSED' 
+                    ? <path d="M8 5v14l11-7z"/> 
+                    : <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/> 
+                 }
+              </svg>
+            </button>
+          </>
+        )}
+
+        {/* Pause Overlay */}
+        {gameState === 'PAUSED' && (
+           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-30">
+              <h2 className="text-3xl font-bold text-white mb-8 tracking-wider">游戏暂停</h2>
+              <div className="flex flex-col gap-4 w-48">
+                <button 
+                  onClick={togglePause}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-full shadow-lg transition active:scale-95"
+                >
+                  继续游戏
+                </button>
+                <button 
+                  onClick={(e) => { e.stopPropagation(); quitGame(); }}
+                  className="bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-full shadow-lg transition active:scale-95"
+                >
+                  退出游戏
+                </button>
+              </div>
+           </div>
         )}
 
         {/* Game Over Screen */}
@@ -376,11 +422,11 @@ const App = () => {
             </div>
 
             {/* AI Message Area */}
-            <div className="mb-8 min-h-[80px] flex items-center justify-center w-full">
+            <div className="mb-6 min-h-[80px] flex items-center justify-center w-full">
               {isAiLoading ? (
                 <div className="flex items-center gap-2 text-gray-400">
                   <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin"></div>
-                  <span>DeepSeek 正在犀利点评...</span>
+                  <span>Gemini 正在犀利点评...</span>
                 </div>
               ) : (
                 <p className="text-lg italic font-medium text-emerald-300 px-4">
@@ -389,12 +435,21 @@ const App = () => {
               )}
             </div>
 
-            <button 
-              onClick={(e) => { e.stopPropagation(); resetGame(); }}
-              className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-full text-lg transition-transform active:scale-95 shadow-lg border-b-4 border-emerald-700 cursor-pointer pointer-events-auto"
-            >
-              再试一次
-            </button>
+            <div className="flex flex-col gap-3 w-full max-w-xs">
+              <button 
+                onClick={(e) => { e.stopPropagation(); resetGame(); setGameState('PLAYING'); }}
+                className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-8 rounded-full text-lg transition-transform active:scale-95 shadow-lg border-b-4 border-emerald-700 cursor-pointer pointer-events-auto w-full"
+              >
+                再试一次
+              </button>
+              
+              <button 
+                onClick={(e) => { e.stopPropagation(); quitGame(); }}
+                className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-8 rounded-full text-lg transition-transform active:scale-95 shadow-lg border-b-4 border-gray-800 cursor-pointer pointer-events-auto w-full"
+              >
+                回到主页
+              </button>
+            </div>
           </div>
         )}
       </div>
